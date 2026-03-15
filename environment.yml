@@ -1,0 +1,21 @@
+name: hide-and-seek
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy>=1.24
+  - scipy
+  - pyyaml
+  - pip
+  - pip:
+    - isaaclab
+    - isaaclab_tasks
+    - gymnasium>=0.29
+    - torch
+    - trimesh
+    - yourdfpy
+    - opencv-python-headless>=4.8
+    - imageio>=2.31
+    - imageio-ffmpeg
+    - matplotlib
+    - pytest

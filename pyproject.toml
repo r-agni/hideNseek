@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64,<82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project]
+name = "hide-and-seek-robot"
+version = "0.1.0"
+description = "Hide-and-seek simulation with two Unitree G1 humanoid robots using Isaac Lab"
+requires-python = ">=3.10"
+dependencies = [
+    "trimesh",
+    "yourdfpy",
+    "opencv-python-headless>=4.8",
+    "imageio>=2.31",
+    "imageio-ffmpeg",
+    "matplotlib",
+    "pytest",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["hide_and_seek*"]

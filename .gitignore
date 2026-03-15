@@ -1,0 +1,34 @@
+# Data & assets (downloaded at setup time)
+data/
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Environments
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Isaac Sim logs
+isaaclab.log
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
