@@ -39,7 +39,11 @@ def convert_ply_to_obj(ply_path: str, obj_path: str) -> str:
 
 
 def convert_obj_to_usd(obj_path: str, usd_dir: str) -> str:
-    """Convert an OBJ mesh to USD using Isaac Lab's MeshConverter.
+    """Convert an OBJ mesh to USD.
+
+    Preferred path uses Isaac Lab's MeshConverter.
+    If Isaac Lab conversion is unavailable (for example in constrained
+    environments), fall back to a direct pxr-based USD mesh export.
 
     Args:
         obj_path: Path to input OBJ file.
@@ -48,19 +52,59 @@ def convert_obj_to_usd(obj_path: str, usd_dir: str) -> str:
     Returns:
         Path to the output USD file.
     """
-    from isaaclab.sim.converters import MeshConverter, MeshConverterCfg
-
     log.info(f"Converting OBJ → USD: {obj_path}")
-    cfg = MeshConverterCfg(
-        asset_path=os.path.abspath(obj_path),
-        usd_dir=os.path.abspath(usd_dir),
-        force_usd_conversion=True,
-        make_instanceable=False,
-        collision_approximation="convexDecomposition",
-    )
-    converter = MeshConverter(cfg)
-    usd_path = converter.usd_path
-    log.info(f"Saved USD: {usd_path}")
+    obj_path = os.path.abspath(obj_path)
+    usd_dir = os.path.abspath(usd_dir)
+
+    try:
+        from isaaclab.sim.converters import MeshConverter, MeshConverterCfg
+
+        cfg = MeshConverterCfg(
+            asset_path=obj_path,
+            usd_dir=usd_dir,
+            force_usd_conversion=True,
+            make_instanceable=False,
+            collision_approximation="convexDecomposition",
+        )
+        converter = MeshConverter(cfg)
+        usd_path = converter.usd_path
+        log.info(f"Saved USD with Isaac Lab MeshConverter: {usd_path}")
+        return usd_path
+    except Exception as exc:
+        log.warning("Isaac Lab MeshConverter unavailable, using pxr fallback: %s", exc)
+
+    from pxr import Gf, Usd, UsdGeom, Vt
+
+    mesh = trimesh.load(obj_path, process=False, force="mesh")
+    if isinstance(mesh, trimesh.Scene):
+        meshes = [geom for geom in mesh.geometry.values() if isinstance(geom, trimesh.Trimesh)]
+        if not meshes:
+            raise ValueError(f"No valid meshes found in {obj_path}")
+        mesh = trimesh.util.concatenate(meshes)
+
+    os.makedirs(usd_dir, exist_ok=True)
+    usd_path = os.path.join(usd_dir, "mesh.usd")
+
+    stage = Usd.Stage.CreateNew(usd_path)
+    if stage is None:
+        raise RuntimeError(f"Failed to create USD stage at {usd_path}")
+
+    world = UsdGeom.Xform.Define(stage, "/World")
+    mesh_prim = UsdGeom.Mesh.Define(stage, "/World/mesh")
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+    points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in mesh.vertices]
+    face_counts = Vt.IntArray([3] * len(mesh.faces))
+    face_indices = Vt.IntArray(mesh.faces.reshape(-1).tolist())
+
+    mesh_prim.GetPointsAttr().Set(points)
+    mesh_prim.GetFaceVertexCountsAttr().Set(face_counts)
+    mesh_prim.GetFaceVertexIndicesAttr().Set(face_indices)
+
+    stage.SetDefaultPrim(world.GetPrim())
+    stage.Save()
+
+    log.info(f"Saved USD with pxr fallback: {usd_path}")
     return usd_path
 
 
