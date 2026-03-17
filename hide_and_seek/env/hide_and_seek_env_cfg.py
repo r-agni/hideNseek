@@ -1,4 +1,4 @@
-"""Environment configuration for hide-and-seek with two Unitree G1 robots."""
+﻿"""Environment configuration for hide-and-seek with two Unitree G1 robots."""
 
 from __future__ import annotations
 
@@ -13,29 +13,31 @@ from isaaclab.managers import (
     TerminationTermCfg,
 )
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import CameraCfg
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 from hide_and_seek.env import events, observations, rewards, terminations
+from hide_and_seek.env.actions import ACTION_DIM, PassthroughActionCfg
 
 # ---------------------------------------------------------------------------
-# Load G1 config from unitree_sim_isaaclab (preferred) or isaaclab_assets.
-# unitree_sim_isaaclab must be cloned to ~/unitree_sim_isaaclab and
-# PROJECT_ROOT env var must point to that directory.
+# G1 robot config â€” prefer unitree_sim_isaaclab, fall back to isaaclab_assets
 # ---------------------------------------------------------------------------
 import sys as _sys
 import os as _os
 
-# Add unitree_sim_isaaclab to path so we can import its robot configs
+# Optional environment scene USD (e.g. a Nucleus scene with walls/rooms).
+# Leave empty to use flat ground only (fastest, no network streaming).
+# Set HIDE_AND_SEEK_SCENE_USD env var to load a specific USD at runtime.
+_SCENE_USD = _os.environ.get("HIDE_AND_SEEK_SCENE_USD", "")
+_SCENE_Z_OFFSET = 0.0
+
 _unitree_path = _os.path.expanduser("~/unitree_sim_isaaclab")
 if _os.path.isdir(_unitree_path) and _unitree_path not in _sys.path:
     _sys.path.insert(0, _unitree_path)
-    # PROJECT_ROOT tells unitree configs where to find the USD assets
     if "PROJECT_ROOT" not in _os.environ:
         _os.environ["PROJECT_ROOT"] = _unitree_path
 
 try:
-    # Import base-fix G1 config (fixed base — good for initial env testing)
     from robots.unitree import G129_CFG_WITH_DEX3_BASE_FIX as _G1_BASE_CFG
 except ImportError:
     try:
@@ -46,15 +48,9 @@ except ImportError:
         except ImportError:
             raise ImportError(
                 "Could not import G1 robot config. "
-                "Clone unitree_sim_isaaclab to ~/unitree_sim_isaaclab and run fetch_assets.sh, "
-                "or install isaaclab_assets with a G1 config."
+                "Clone unitree_sim_isaaclab to ~/unitree_sim_isaaclab or "
+                "install isaaclab_assets with a G1 config."
             )
-
-_project_dir = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
-_replica_scene_usd = _os.environ.get(
-    "HNS_REPLICA_SCENE_USD",
-    _os.path.join(_project_dir, "data", "scenes", "replica_usd", "apartment_0", "mesh.usd"),
-)
 
 
 # ---------------------------------------------------------------------------
@@ -62,82 +58,59 @@ _replica_scene_usd = _os.environ.get(
 # ---------------------------------------------------------------------------
 @configclass
 class HideAndSeekSceneCfg(InteractiveSceneCfg):
-    """Scene with two G1 robots, cameras, ground plane, and lights."""
+    """Flat-ground arena with two G1 robots and an overview camera."""
 
-    # Ground plane kept as a fallback/backup collider.
-    ground = sim_utils.GroundPlaneCfg()
-
-    # Replica scene mesh (set HNS_REPLICA_SCENE_USD to override path).
-    replica_scene = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/ReplicaScene",
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(1.0, 0.0, 0.0, 0.0),
+    terrain = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="plane",
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="average",
+            restitution_combine_mode="average",
+            static_friction=1.0,
+            dynamic_friction=1.0,
         ),
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=_replica_scene_usd,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-        ),
+        debug_vis=False,
     )
 
-    # Dome light for ambient illumination
-    dome_light = sim_utils.DomeLightCfg(
-        intensity=1000.0,
-        color=(1.0, 1.0, 1.0),
-    )
-
-    # Seeker G1 robot
     seeker: ArticulationCfg = _G1_BASE_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Seeker",
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.8),
-            joint_pos={".*": 0.0},
+            pos=(-1.5, 0.0, 0.80),
+            # Use G1_CFG standing pose: hip_pitch=-0.20, knee=0.42, ankle=-0.23, etc.
         ),
+        actuators={**_G1_BASE_CFG.actuators, "arms": _G1_BASE_CFG.actuators["arms"].replace(stiffness=0.0, damping=5.0)},
     )
 
-    # Hider G1 robot
     hider: ArticulationCfg = _G1_BASE_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Hider",
+        spawn=_G1_BASE_CFG.spawn.replace(
+            semantic_tags=[("class", "hider")],
+        ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(5.0, 0.0, 0.8),
-            joint_pos={".*": 0.0},
+            pos=(1.5, 0.0, 0.80),
+            # Use G1_CFG standing pose: hip_pitch=-0.20, knee=0.42, ankle=-0.23, etc.
         ),
+        actuators={**_G1_BASE_CFG.actuators, "arms": _G1_BASE_CFG.actuators["arms"].replace(stiffness=0.0, damping=5.0)},
     )
 
-    # Seeker front camera (matches Unitree G1 d435_link hierarchy)
-    seeker_camera: CameraCfg = CameraCfg(
-        prim_path="{ENV_REGEX_NS}/Seeker/d435_link/front_cam",
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.1, 0.0, 0.0),
-            rot=(0.5, -0.5, 0.5, -0.5),  # Forward-facing
-            convention="ros",
-        ),
-        height=256,
-        width=256,
-        data_types=["rgb", "depth", "semantic_segmentation"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=2.0,
-            horizontal_aperture=3.6,
-        ),
-    )
+    # Cameras disabled — detection uses proximity (≤0.5 m) instead of vision.
+    # Re-enable for demo/visualization only (adds significant rendering overhead).
+    # seeker_camera: CameraCfg = CameraCfg(...)
 
-    # Hider front camera (matches Unitree G1 d435_link hierarchy)
-    hider_camera: CameraCfg = CameraCfg(
-        prim_path="{ENV_REGEX_NS}/Hider/d435_link/front_cam",
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.1, 0.0, 0.0),
-            rot=(0.5, -0.5, 0.5, -0.5),
-            convention="ros",
-        ),
-        height=256,
-        width=256,
-        data_types=["rgb", "depth"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=2.0,
-            horizontal_aperture=3.6,
-        ),
-    )
+    # Overhead camera disabled during training — renders 1280×720 RGB every step
+    # which consumes ~80% of GPU time. Re-enable for visualization only.
+    # overhead_camera: CameraCfg = CameraCfg(...)
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+@configclass
+class ActionsCfg:
+    """6D velocity commands (3 per agent) â€” decoded to joint targets in env."""
+
+    velocity = PassthroughActionCfg(asset_name="seeker", action_dim=ACTION_DIM)
 
 
 # ---------------------------------------------------------------------------
@@ -147,33 +120,35 @@ class HideAndSeekSceneCfg(InteractiveSceneCfg):
 class SeekerObsCfg(ObservationGroupCfg):
     """Observations for the seeker agent."""
 
-    root_pos = ObservationTermCfg(func=observations.seeker_root_pos)
+    root_pos  = ObservationTermCfg(func=observations.seeker_root_pos)
     root_quat = ObservationTermCfg(func=observations.seeker_root_quat)
+    lin_vel   = ObservationTermCfg(func=observations.seeker_lin_vel)
+    ang_vel   = ObservationTermCfg(func=observations.seeker_ang_vel)
     joint_pos = ObservationTermCfg(func=observations.seeker_joint_pos)
     joint_vel = ObservationTermCfg(func=observations.seeker_joint_vel)
-    phase = ObservationTermCfg(func=observations.game_phase)
-    timer = ObservationTermCfg(func=observations.phase_timer)
-    relative_hider = ObservationTermCfg(func=observations.relative_hider_position)
+    phase     = ObservationTermCfg(func=observations.game_phase)
+    timer     = ObservationTermCfg(func=observations.phase_timer)
+    detection = ObservationTermCfg(func=observations.seeker_detection_signal)
 
 
 @configclass
 class HiderObsCfg(ObservationGroupCfg):
     """Observations for the hider agent."""
 
-    root_pos = ObservationTermCfg(func=observations.hider_root_pos)
+    root_pos  = ObservationTermCfg(func=observations.hider_root_pos)
     root_quat = ObservationTermCfg(func=observations.hider_root_quat)
+    lin_vel   = ObservationTermCfg(func=observations.hider_lin_vel)
+    ang_vel   = ObservationTermCfg(func=observations.hider_ang_vel)
     joint_pos = ObservationTermCfg(func=observations.hider_joint_pos)
     joint_vel = ObservationTermCfg(func=observations.hider_joint_vel)
-    phase = ObservationTermCfg(func=observations.game_phase)
-    timer = ObservationTermCfg(func=observations.phase_timer)
+    phase     = ObservationTermCfg(func=observations.game_phase)
+    timer     = ObservationTermCfg(func=observations.phase_timer)
 
 
 @configclass
 class ObservationsCfg:
-    """All observation groups."""
-
     seeker: SeekerObsCfg = SeekerObsCfg()
-    hider: HiderObsCfg = HiderObsCfg()
+    hider:  HiderObsCfg  = HiderObsCfg()
 
 
 # ---------------------------------------------------------------------------
@@ -181,17 +156,15 @@ class ObservationsCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class RewardsCfg:
-    """Reward terms (placeholders — will be tuned during training phase)."""
-
-    seeker_detection = RewardTermCfg(
-        func=rewards.seeker_detection_reward, weight=10.0
-    )
-    hider_survival = RewardTermCfg(
-        func=rewards.hider_survival_reward, weight=0.1
-    )
-    seeker_approach = RewardTermCfg(
-        func=rewards.seeker_approach_reward, weight=1.0
-    )
+    # Seeker — proximity-based: reach the hider
+    seeker_detection  = RewardTermCfg(func=rewards.seeker_detection_reward, weight=10.0)
+    seeker_approach   = RewardTermCfg(func=rewards.seeker_approach_reward,  weight=2.0)
+    seeker_alive      = RewardTermCfg(func=rewards.seeker_alive_bonus,      weight=0.01)
+    # Hider — stay far, move to cover during hiding phase
+    hider_survival        = RewardTermCfg(func=rewards.hider_survival_reward,        weight=1.0)
+    hider_distance        = RewardTermCfg(func=rewards.hider_distance_reward,        weight=0.5)
+    hider_hiding_movement = RewardTermCfg(func=rewards.hider_hiding_movement_reward, weight=0.2)
+    hider_alive           = RewardTermCfg(func=rewards.hider_alive_bonus,            weight=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -199,17 +172,9 @@ class RewardsCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class TerminationsCfg:
-    """Episode termination conditions."""
-
-    hider_found = TerminationTermCfg(
-        func=terminations.hider_detected, time_out=False
-    )
-    phase_done = TerminationTermCfg(
-        func=terminations.game_phase_done, time_out=True
-    )
-    fallen = TerminationTermCfg(
-        func=terminations.out_of_bounds, time_out=False
-    )
+    hider_found  = TerminationTermCfg(func=terminations.hider_detected,   time_out=False)
+    phase_done   = TerminationTermCfg(func=terminations.game_phase_done,  time_out=True)
+    robot_fallen = TerminationTermCfg(func=terminations.robot_fallen,     time_out=False)
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +182,13 @@ class TerminationsCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class EventsCfg:
-    """Randomization events applied on episode reset."""
-
     reset_agents = EventTermCfg(
         func=events.reset_agents_to_random_positions,
         mode="reset",
         params={
-            "min_spawn_distance": 3.0,
-            "spawn_height": 0.8,
-            "spawn_range": 5.0,
+            "min_spawn_distance": 2.0,
+            "spawn_height": 0.80,  # G1 pelvis ~0.74m; 0.80 gives clearance for PhysX to settle
+            "spawn_range": 3.0,    # hospital corridors ~6m wide; stay away from perimeter walls
         },
     )
 
@@ -237,26 +200,28 @@ class EventsCfg:
 class HideAndSeekEnvCfg(ManagerBasedRLEnvCfg):
     """Full configuration for the hide-and-seek environment."""
 
-    # Scene
-    scene: HideAndSeekSceneCfg = HideAndSeekSceneCfg(
-        num_envs=1,
-        env_spacing=0.0,
-    )
-
-    # Managers
-    observations: ObservationsCfg = ObservationsCfg()
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-    events: EventsCfg = EventsCfg()
+    scene:        HideAndSeekSceneCfg = HideAndSeekSceneCfg(num_envs=1, env_spacing=0.0)
+    actions:      ActionsCfg          = ActionsCfg()
+    observations: ObservationsCfg     = ObservationsCfg()
+    rewards:      RewardsCfg          = RewardsCfg()
+    terminations: TerminationsCfg     = TerminationsCfg()
+    events:       EventsCfg           = EventsCfg()
 
     # Simulation timing
-    sim_dt: float = 1.0 / 60.0  # 60 Hz physics
-    decimation: int = 2  # Control at 30 Hz (60/2)
-    episode_length_s: float = 40.0  # 10s hiding + 30s seeking
+    sim_dt:           float = 1.0 / 60.0  # 60 Hz physics
+    decimation:       int   = 2            # control at 30 Hz
+    episode_length_s: float = 45.0         # 15s hiding + 30s seeking
 
-    # --- Game-specific parameters ---
-    hiding_phase_steps: int = 150  # 5 sec at 30 Hz control
-    seeking_phase_steps: int = 900  # 30 sec at 30 Hz control
-    min_spawn_distance: float = 3.0  # meters
-    detection_pixel_threshold: float = 0.005  # 0.5% of pixels
-    detection_confirmation_steps: int = 3  # consecutive frames
+    # Game parameters
+    hiding_phase_steps:           int   = 450    # 15s at 30 Hz
+    seeking_phase_steps:          int   = 900    # 30s at 30 Hz
+    min_spawn_distance:           float = 3.0    # meters
+    detection_confirmation_steps: int   = 3      # consecutive frames
+
+    # Path to the pretrained G1 locomotion policy (motion.pt).
+    # Set this to ~/unitree_rl_gym/deploy/pre_train/g1/motion.pt or
+    # pass via train_rl.py --policy-path argument.
+    locomotion_policy_path: str = ""
+
+
+
