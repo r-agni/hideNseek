@@ -1,10 +1,10 @@
-"""Training utilities for hide-and-seek self-play."""
+"""Training utilities for hide-and-seek RL."""
 
-from .self_play import LLMPolicyConfig, RandomVelocityPolicy, SelfPlayConfig, SelfPlayRunner
+from .locomotion_policy import LocomotionPolicy
+from .rl_runner import RLConfig, RLRunner
 
 __all__ = [
-    "LLMPolicyConfig",
-    "RandomVelocityPolicy",
-    "SelfPlayConfig",
-    "SelfPlayRunner",
+    "LocomotionPolicy",
+    "RLConfig",
+    "RLRunner",
 ]
