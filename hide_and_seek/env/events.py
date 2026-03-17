@@ -17,7 +17,7 @@ def reset_agents_to_random_positions(
     env: ManagerBasedRLEnv,
     env_ids: torch.Tensor,
     min_spawn_distance: float = 3.0,
-    spawn_height: float = 0.8,
+    spawn_height: float = 0.80,
     spawn_range: float = 5.0,
     max_attempts: int = 100,
 ):
@@ -87,6 +87,12 @@ def reset_agents_to_random_positions(
     seeker.write_root_velocity_to_sim(zero_vel, env_ids)
     hider.write_root_velocity_to_sim(zero_vel, env_ids)
 
+    # Reset joint positions and velocities to G1 default standing pose.
+    # This prevents joints from carrying over from a fallen/crumpled previous episode.
+    # Matches G1_CFG init_state and LocomotionPolicy.G1_DEFAULT_JOINT_POS.
+    _reset_joints_to_default(seeker, env_ids, device)
+    _reset_joints_to_default(hider, env_ids, device)
+
     # Reset game state
     env.phase_manager.reset(env_ids)
     env.visibility_tracker.reset(env_ids)
@@ -110,3 +116,36 @@ def _yaw_to_quat(yaw: torch.Tensor, device: str) -> torch.Tensor:
     quat[:, 0] = torch.cos(half_yaw)  # w
     quat[:, 3] = torch.sin(half_yaw)  # z
     return quat
+
+
+# G1 standing joint defaults — must match G1_CFG.init_state and LocomotionPolicy.G1_DEFAULT_JOINT_POS.
+# Joint order follows the articulation's own joint_names ordering (handled by name matching below).
+_G1_STANDING_JOINT_POS: "dict[str, float]" = {
+    ".*_hip_pitch_joint":   -0.20,
+    ".*_knee_joint":         0.42,
+    ".*_ankle_pitch_joint": -0.23,
+    # All other joints (hip_yaw, hip_roll, ankle_roll, torso, arms) → 0.0 via default
+}
+
+
+def _reset_joints_to_default(robot, env_ids: torch.Tensor, device: str) -> None:
+    """Reset all robot joints to the G1 standing pose with zero velocity.
+
+    Applies a named joint position dict to the articulation so that non-leg
+    joints (arms, torso) don't carry over from a previous fallen episode.
+    """
+    num_resets = len(env_ids)
+    num_joints = robot.data.joint_pos.shape[1]
+
+    # Start from zero (arms, torso, hip yaw/roll, ankle roll all stay at 0)
+    joint_pos = torch.zeros(num_resets, num_joints, device=device)
+    joint_vel = torch.zeros(num_resets, num_joints, device=device)
+
+    # Apply named overrides using regex matching against joint names
+    import re
+    for pattern, value in _G1_STANDING_JOINT_POS.items():
+        for i, name in enumerate(robot.data.joint_names):
+            if re.fullmatch(pattern, name):
+                joint_pos[:, i] = value
+
+    robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
