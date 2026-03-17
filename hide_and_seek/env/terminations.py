@@ -14,6 +14,10 @@ import torch
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+# G1 robot pelvis height at normal standing is ~0.93 m.
+# Below 0.3 m means the robot has fallen and collapsed on the ground.
+_FALLEN_HEIGHT_THRESHOLD = 0.3  # meters
+
 
 def hider_detected(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Episode ends when seeker confirms detection of hider."""
@@ -21,15 +25,16 @@ def hider_detected(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def game_phase_done(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Episode ends when game reaches DONE phase (seeking timeout)."""
+    """Episode ends when seeking phase times out (DONE phase reached)."""
     return env.phase_manager.is_done()
 
 
-def out_of_bounds(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Episode ends if either agent falls below the scene floor."""
-    seeker = env.scene["seeker"]
-    hider = env.scene["hider"]
-    floor_threshold = -1.0  # meters below origin
-    seeker_oob = seeker.data.root_pos_w[:, 2] < floor_threshold
-    hider_oob = hider.data.root_pos_w[:, 2] < floor_threshold
-    return seeker_oob | hider_oob
+def robot_fallen(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Episode ends if either robot's pelvis drops below the fallen threshold.
+
+    This catches cases where a robot tips over, falls, or is otherwise in an
+    unrecoverable pose that would make further simulation meaningless.
+    """
+    seeker_fallen = env.scene["seeker"].data.root_pos_w[:, 2] < _FALLEN_HEIGHT_THRESHOLD
+    hider_fallen  = env.scene["hider"].data.root_pos_w[:, 2] < _FALLEN_HEIGHT_THRESHOLD
+    return seeker_fallen | hider_fallen
