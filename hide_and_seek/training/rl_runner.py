@@ -40,7 +40,7 @@ class RLConfig:
     total_steps:    int   = 5_000_000
     rollout_steps:  int   = 2048        # steps collected per env per update
     num_epochs:     int   = 10          # PPO epochs per rollout
-    minibatch_size: int   = 512
+    minibatch_size: int   = 1024
     lr:             float = 3e-4
     gamma:          float = 0.99
     gae_lambda:     float = 0.95
@@ -54,7 +54,7 @@ class RLConfig:
     record:         bool  = False
     record_every:   int   = 5           # physics steps between frames
     video_fps:      int   = 10
-    video_path:     str   = "runs/recording.mp4"
+    video_path:     str   = ""          # if empty, auto-generates timestamped path under runs/recordings/
 
 
 # ---------------------------------------------------------------------------
@@ -265,11 +265,14 @@ class RLRunner:
             # --- Checkpoint ---
             if total_env_steps % self.cfg.save_every < self.cfg.rollout_steps * self.num_envs:
                 self._save_checkpoint(total_env_steps)
+                if self.cfg.record and self._frames:
+                    self._write_video(segment_step=total_env_steps)
+                    self._frames.clear()
 
         # Final checkpoint + optional video
         self._save_checkpoint(total_env_steps)
         if self.cfg.record and self._frames:
-            self._write_video()
+            self._write_video(segment_step=total_env_steps)
 
         print(f"[rl_runner] training complete — {total_env_steps:,} steps in "
               f"{time.time() - t_start:.0f}s")
@@ -334,6 +337,33 @@ class RLRunner:
     # PPO update
     # ------------------------------------------------------------------
 
+    def _gae(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        next_val: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> torch.Tensor:
+        """Generalized Advantage Estimation.
+
+        Pre-computes next_values and discount tensors once outside the loop to
+        avoid per-step conditional indexing and redundant ops.
+        """
+        cfg = self.cfg
+        R = rewards.shape[0]
+        # next_values[t] = values[t+1] for t < R-1, else bootstrap next_val
+        next_vals = torch.empty_like(values)
+        next_vals[:-1] = values[1:]
+        next_vals[-1]  = next_val
+        deltas   = rewards + cfg.gamma * next_vals * (1 - dones) - values
+        discount = cfg.gamma * cfg.gae_lambda * (1 - dones)
+        adv = torch.zeros_like(rewards)
+        gae = torch.zeros(self.num_envs, device=self.device)
+        for t in reversed(range(R)):
+            gae    = deltas[t] + discount[t] * gae
+            adv[t] = gae
+        return adv
+
     def _ppo_update(self) -> dict[str, float]:
         """Compute independent GAE for each agent, then run PPO minibatch updates."""
         cfg = self.cfg
@@ -352,27 +382,12 @@ class RLRunner:
         h_values  = self._buf["h_values"]
         dones     = self._buf["dones"]
 
-        # --- Seeker GAE ---
-        s_advantages = torch.zeros_like(s_rewards)
-        last_s_gae   = torch.zeros(N, device=self.device)
-        for t in reversed(range(R)):
-            nxt_s_val = s_next_val if t == R - 1 else s_values[t + 1]
-            delta     = s_rewards[t] + cfg.gamma * nxt_s_val * (1 - dones[t]) - s_values[t]
-            last_s_gae = delta + cfg.gamma * cfg.gae_lambda * (1 - dones[t]) * last_s_gae
-            s_advantages[t] = last_s_gae
-        s_returns     = s_advantages + s_values
-        s_advantages  = (s_advantages - s_advantages.mean()) / (s_advantages.std() + 1e-8)
-
-        # --- Hider GAE ---
-        h_advantages = torch.zeros_like(h_rewards)
-        last_h_gae   = torch.zeros(N, device=self.device)
-        for t in reversed(range(R)):
-            nxt_h_val = h_next_val if t == R - 1 else h_values[t + 1]
-            delta     = h_rewards[t] + cfg.gamma * nxt_h_val * (1 - dones[t]) - h_values[t]
-            last_h_gae = delta + cfg.gamma * cfg.gae_lambda * (1 - dones[t]) * last_h_gae
-            h_advantages[t] = last_h_gae
-        h_returns     = h_advantages + h_values
-        h_advantages  = (h_advantages - h_advantages.mean()) / (h_advantages.std() + 1e-8)
+        s_advantages = self._gae(s_rewards, s_values, s_next_val, dones)
+        h_advantages = self._gae(h_rewards, h_values, h_next_val, dones)
+        s_returns    = s_advantages + s_values
+        h_returns    = h_advantages + h_values
+        s_advantages = (s_advantages - s_advantages.mean()) / (s_advantages.std() + 1e-8)
+        h_advantages = (h_advantages - h_advantages.mean()) / (h_advantages.std() + 1e-8)
 
         # Flatten (R × N) → (R*N)
         flat = lambda t: t.reshape(-1, *t.shape[2:])
@@ -393,27 +408,37 @@ class RLRunner:
 
         self.policy.train()
         for _ in range(cfg.num_epochs):
+            # Shuffle once, then slice contiguously — avoids scatter/gather memory access
             idx = torch.randperm(total, device=self.device)
+            sb_s_obs    = b_s_obs[idx]
+            sb_h_obs    = b_h_obs[idx]
+            sb_act      = b_act[idx]
+            sb_s_lp_old = b_s_lp_old[idx]
+            sb_h_lp_old = b_h_lp_old[idx]
+            sb_s_adv    = b_s_adv[idx]
+            sb_h_adv    = b_h_adv[idx]
+            sb_s_ret    = b_s_ret[idx]
+            sb_h_ret    = b_h_ret[idx]
             for start in range(0, total, cfg.minibatch_size):
-                mb = idx[start:start + cfg.minibatch_size]
+                end = min(start + cfg.minibatch_size, total)
 
                 s_lp, h_lp, s_ent, h_ent, s_val_mb, h_val_mb = self.policy.evaluate(
-                    b_s_obs[mb], b_h_obs[mb], b_act[mb]
+                    sb_s_obs[start:end], sb_h_obs[start:end], sb_act[start:end]
                 )
 
                 # Seeker PPO
-                s_ratio = (s_lp - b_s_lp_old[mb]).exp()
-                s_surr1 = s_ratio * b_s_adv[mb]
-                s_surr2 = s_ratio.clamp(1 - cfg.clip_eps, 1 + cfg.clip_eps) * b_s_adv[mb]
+                s_ratio = (s_lp - sb_s_lp_old[start:end]).exp()
+                s_surr1 = s_ratio * sb_s_adv[start:end]
+                s_surr2 = s_ratio.clamp(1 - cfg.clip_eps, 1 + cfg.clip_eps) * sb_s_adv[start:end]
                 s_policy_loss = -torch.min(s_surr1, s_surr2).mean()
-                s_value_loss  = 0.5 * (s_val_mb - b_s_ret[mb]).pow(2).mean()
+                s_value_loss  = 0.5 * (s_val_mb - sb_s_ret[start:end]).pow(2).mean()
 
                 # Hider PPO
-                h_ratio = (h_lp - b_h_lp_old[mb]).exp()
-                h_surr1 = h_ratio * b_h_adv[mb]
-                h_surr2 = h_ratio.clamp(1 - cfg.clip_eps, 1 + cfg.clip_eps) * b_h_adv[mb]
+                h_ratio = (h_lp - sb_h_lp_old[start:end]).exp()
+                h_surr1 = h_ratio * sb_h_adv[start:end]
+                h_surr2 = h_ratio.clamp(1 - cfg.clip_eps, 1 + cfg.clip_eps) * sb_h_adv[start:end]
                 h_policy_loss = -torch.min(h_surr1, h_surr2).mean()
-                h_value_loss  = 0.5 * (h_val_mb - b_h_ret[mb]).pow(2).mean()
+                h_value_loss  = 0.5 * (h_val_mb - sb_h_ret[start:end]).pow(2).mean()
 
                 entropy_loss = -(s_ent + h_ent).mean()
 
@@ -484,25 +509,65 @@ class RLRunner:
     # ------------------------------------------------------------------
 
     def _grab_camera_frame(self):
-        """Return overhead camera RGB as uint8 HxWx3, or None on failure."""
+        """Render a simple top-down visualization of robot positions and heights.
+
+        Draws seeker (red) and hider (blue) as circles on a 2D overhead map.
+        Also shows robot Z-height as text to debug whether they stand or collapse.
+        No GPU camera needed — just matplotlib rasterization.
+        """
         import numpy as np
         try:
-            self.env.sim.render()
-            cam = self.env.scene["overhead_camera"]
-            cam.update(dt=self.env.sim.cfg.dt)
-            rgb = cam.data.output.get("rgb")
-            if rgb is None or rgb.numel() == 0:
-                return None
-            frame_t = rgb[0, :, :, :3]
-            frame = frame_t.cpu().numpy()
-            if frame.dtype != np.uint8:
-                frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
-            return frame if frame.max() > 0 else None
-        except Exception:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except ImportError:
             return None
 
-    def _write_video(self):
-        out_path = Path(self.cfg.video_path)
+        try:
+            s_pos = self.env.scene["seeker"].data.root_pos_w[0].cpu().numpy()
+            h_pos = self.env.scene["hider"].data.root_pos_w[0].cpu().numpy()
+
+            fig, ax = plt.subplots(1, 1, figsize=(4, 4), dpi=80)
+            ax.set_xlim(-6, 6)
+            ax.set_ylim(-6, 6)
+            ax.set_aspect("equal")
+            ax.set_facecolor("#2a2a2a")
+            ax.grid(True, alpha=0.3)
+            phase_val = int(self.env.phase_manager.phase[0].item()) if hasattr(self.env, "phase_manager") else -1
+            phase_names = {0: "INIT", 1: "HIDING", 2: "SEEKING", 3: "DONE"}
+            ax.set_title(f"Phase: {phase_names.get(phase_val, '?')}", color="white", fontsize=10)
+
+            # Seeker = red, Hider = blue
+            ax.plot(s_pos[0], s_pos[1], "ro", markersize=12, label=f"Seeker z={s_pos[2]:.2f}")
+            ax.plot(h_pos[0], h_pos[1], "bs", markersize=12, label=f"Hider z={h_pos[2]:.2f}")
+            ax.legend(loc="upper right", fontsize=8, facecolor="#333", labelcolor="white")
+
+            fig.patch.set_facecolor("#1a1a1a")
+            ax.tick_params(colors="white")
+            for spine in ax.spines.values():
+                spine.set_color("white")
+
+            fig.canvas.draw()
+            w, h = fig.canvas.get_width_height()
+            # buffer_rgba() works on all matplotlib versions; tostring_rgb() was removed in 3.8+
+            rgba = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+            frame = rgba[:, :, :3]  # drop alpha
+            plt.close(fig)
+            return frame
+        except Exception:
+            try:
+                plt.close(fig)
+            except Exception:
+                pass
+            return None
+
+    def _write_video(self, segment_step: int = 0):
+        """Write current frames to a video file. Each call gets a unique filename."""
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = Path(self.cfg.video_path) if self.cfg.video_path else Path("runs/recordings")
+        base = base if base.suffix != ".mp4" else base.parent
+        out_path = base / f"run_{ts}_step{segment_step:09d}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             import cv2

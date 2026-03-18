@@ -61,11 +61,13 @@ def parse_args() -> argparse.Namespace:
                         help="Resume from checkpoint .pt file.")
     parser.add_argument("--rollout-steps",  type=int,   default=2048)
     parser.add_argument("--num-epochs",     type=int,   default=10)
-    parser.add_argument("--minibatch-size", type=int,   default=512)
+    parser.add_argument("--minibatch-size", type=int,   default=1024)
     parser.add_argument("--lr",             type=float, default=3e-4)
     parser.add_argument("--checkpoint-dir", type=str,   default="runs/checkpoints")
     parser.add_argument("--record",     action="store_true")
-    parser.add_argument("--video-path", type=str, default="runs/recording.mp4")
+    parser.add_argument("--video-path", type=str, default="runs/recordings",
+                        help="Directory (or .mp4 prefix) for recordings. "
+                             "Each run gets a unique timestamped filename — never overwrites.")
     parser.add_argument(
         "--kit-args",
         type=str,

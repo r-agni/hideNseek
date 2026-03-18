@@ -31,9 +31,9 @@ CMD_DIM    = 3   # velocity command dimensions per agent (vx, vy, yaw_rate)
 ACTION_DIM = 6   # total action dimensions (CMD_DIM × 2 agents)
 
 # Physical velocity limits — RL action ∈ [-1, 1] is multiplied by these
-VX_MAX  = 1.0   # m/s  (forward/backward)
+VX_MAX  = 0.5   # m/s  (forward/backward)
 VY_MAX  = 0.5   # m/s  (strafe)
-YAW_MAX = 1.0   # rad/s (rotation)
+YAW_MAX = 0.5   # rad/s (rotation)
 
 CMD_SCALE = torch.tensor([VX_MAX, VY_MAX, YAW_MAX], dtype=torch.float32)
 

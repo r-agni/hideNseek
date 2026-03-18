@@ -104,6 +104,12 @@ class HideAndSeekEnv(ManagerBasedRLEnv):
         self._seeker_loco = LocomotionPolicy(policy_path, self.num_envs, str(self.device))
         self._hider_loco  = LocomotionPolicy(policy_path, self.num_envs, str(self.device))
 
+        # Debug: print actuator config so we can verify PD gains
+        for name in ("seeker", "hider"):
+            robot = self.scene[name]
+            print(f"[debug] {name} joint_names: {robot.data.joint_names}")
+            print(f"[debug] {name} init joint_pos (first env): {robot.data.joint_pos[0].tolist()}")
+
 
     # ------------------------------------------------------------------
     # Physics callbacks

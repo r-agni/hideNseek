@@ -118,12 +118,13 @@ def _yaw_to_quat(yaw: torch.Tensor, device: str) -> torch.Tensor:
     return quat
 
 
-# G1 standing joint defaults — must match G1_CFG.init_state and LocomotionPolicy.G1_DEFAULT_JOINT_POS.
-# Joint order follows the articulation's own joint_names ordering (handled by name matching below).
+# G1 standing joint defaults — MUST match unitree_rl_gym training defaults
+# (~/unitree_rl_gym/legged_gym/envs/g1/g1_config.py → default_joint_angles)
+# and LocomotionPolicy.G1_DEFAULT_JOINT_POS.
 _G1_STANDING_JOINT_POS: "dict[str, float]" = {
-    ".*_hip_pitch_joint":   -0.20,
-    ".*_knee_joint":         0.42,
-    ".*_ankle_pitch_joint": -0.23,
+    ".*_hip_pitch_joint":   -0.1,
+    ".*_knee_joint":         0.3,
+    ".*_ankle_pitch_joint": -0.2,
     # All other joints (hip_yaw, hip_roll, ankle_roll, torso, arms) → 0.0 via default
 }
 
@@ -133,6 +134,8 @@ def _reset_joints_to_default(robot, env_ids: torch.Tensor, device: str) -> None:
 
     Applies a named joint position dict to the articulation so that non-leg
     joints (arms, torso) don't carry over from a previous fallen episode.
+    Also sets joint position targets so the PD controller holds the pose
+    (Isaac Lab issue #2663: write_joint_state_to_sim alone is insufficient).
     """
     num_resets = len(env_ids)
     num_joints = robot.data.joint_pos.shape[1]
@@ -149,3 +152,6 @@ def _reset_joints_to_default(robot, env_ids: torch.Tensor, device: str) -> None:
                 joint_pos[:, i] = value
 
     robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    # Set PD targets to match — without this, the controller targets 0.0
+    # and immediately drives joints away from the standing pose.
+    robot.set_joint_position_target(joint_pos, env_ids=env_ids)

@@ -35,11 +35,11 @@ class LocomotionPolicy:
     # G1 12-DOF joint order (matches unitree_rl_gym g1 config):
     #   left:  hip_yaw, hip_roll, hip_pitch, knee, ankle_pitch, ankle_roll
     #   right: hip_yaw, hip_roll, hip_pitch, knee, ankle_pitch, ankle_roll
-    # Values from G1_CFG in isaaclab_assets (the same defaults used for spawning):
-    #   hip_pitch=-0.20, knee=0.42, ankle_pitch=-0.23, all others=0.0
+    # Values from unitree_rl_gym training config (g1_config.py → default_joint_angles).
+    # These MUST match the training defaults — the policy was trained with these offsets.
     G1_DEFAULT_JOINT_POS = torch.tensor([
-        0.0,  0.0, -0.20,  0.42, -0.23,  0.0,   # left leg
-        0.0,  0.0, -0.20,  0.42, -0.23,  0.0,   # right leg
+        0.0,  0.0, -0.1,  0.3, -0.2,  0.0,   # left leg
+        0.0,  0.0, -0.1,  0.3, -0.2,  0.0,   # right leg
     ], dtype=torch.float32)
 
     # Observation scaling factors from unitree_rl_gym g1_env.py
@@ -121,8 +121,8 @@ class LocomotionPolicy:
             self._leg_joint_indices = self._resolve_leg_indices(robot)
             print(f"[locomotion] leg joint indices: {self._leg_joint_indices.tolist()}")
 
-        # Advance gait phase (period = 0.8s; dt ≈ 1/30 Hz control step)
-        self._phase = (self._phase + (1.0 / 30.0) / 0.8) % 1.0
+        # Advance gait phase (period = 0.8s; dt = 0.02s at 50 Hz control, matching training)
+        self._phase = (self._phase + 0.02 / 0.8) % 1.0
 
         obs = self._build_obs(robot, velocity_command)
         with torch.no_grad():

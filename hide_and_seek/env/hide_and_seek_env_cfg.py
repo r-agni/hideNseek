@@ -16,6 +16,8 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
+from isaaclab.actuators import ImplicitActuatorCfg
+
 from hide_and_seek.env import events, observations, rewards, terminations
 from hide_and_seek.env.actions import ACTION_DIM, PassthroughActionCfg
 
@@ -52,13 +54,145 @@ except ImportError:
                 "install isaaclab_assets with a G1 config."
             )
 
+# G1 standing joint positions — MUST match unitree_rl_gym training defaults
+# (from ~/unitree_rl_gym/legged_gym/envs/g1/g1_config.py → default_joint_angles).
+# These are the angles the locomotion policy (motion.pt) was trained with.
+# NOTE: Isaac Lab forbids overlapping regex — list every joint explicitly.
+_G1_STANDING_JOINTS: dict[str, float] = {
+    ".*_hip_yaw_joint":     0.0,
+    ".*_hip_roll_joint":    0.0,
+    ".*_hip_pitch_joint":  -0.1,
+    ".*_knee_joint":        0.3,
+    ".*_ankle_pitch_joint":-0.2,
+    ".*_ankle_roll_joint":  0.0,
+    "torso_joint":          0.0,
+}
+
+# Actuators matching unitree_rl_gym g1_config.py PD gains exactly.
+# The locomotion policy was trained with these gains — mismatched gains
+# cause instability and falling.
+_TRAINING_LEGS = ImplicitActuatorCfg(
+    joint_names_expr=[
+        ".*_hip_yaw_joint",
+        ".*_hip_roll_joint",
+        ".*_hip_pitch_joint",
+        ".*_knee_joint",
+        "torso_joint",
+    ],
+    stiffness={
+        ".*_hip_yaw_joint": 100.0,
+        ".*_hip_roll_joint": 100.0,
+        ".*_hip_pitch_joint": 100.0,
+        ".*_knee_joint": 150.0,
+        "torso_joint": 100.0,
+    },
+    damping={
+        ".*_hip_yaw_joint": 2.0,
+        ".*_hip_roll_joint": 2.0,
+        ".*_hip_pitch_joint": 2.0,
+        ".*_knee_joint": 4.0,
+        "torso_joint": 2.0,
+    },
+)
+
+_TRAINING_FEET = ImplicitActuatorCfg(
+    joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+    stiffness=40.0,
+    damping=2.0,
+)
+
+# 12-DOF G1 has no torso_joint — legs actuator without it
+_TRAINING_LEGS_12DOF = ImplicitActuatorCfg(
+    joint_names_expr=[
+        ".*_hip_yaw_joint",
+        ".*_hip_roll_joint",
+        ".*_hip_pitch_joint",
+        ".*_knee_joint",
+    ],
+    stiffness={
+        ".*_hip_yaw_joint": 100.0,
+        ".*_hip_roll_joint": 100.0,
+        ".*_hip_pitch_joint": 100.0,
+        ".*_knee_joint": 150.0,
+    },
+    damping={
+        ".*_hip_yaw_joint": 2.0,
+        ".*_hip_roll_joint": 2.0,
+        ".*_hip_pitch_joint": 2.0,
+        ".*_knee_joint": 4.0,
+    },
+)
+
+_PASSIVE_ARMS = ImplicitActuatorCfg(
+    joint_names_expr=[
+        ".*_shoulder_pitch_joint",
+        ".*_shoulder_roll_joint",
+        ".*_shoulder_yaw_joint",
+        ".*_elbow_pitch_joint",
+        ".*_elbow_roll_joint",
+        ".*_five_joint",
+        ".*_three_joint",
+        ".*_six_joint",
+        ".*_four_joint",
+        ".*_zero_joint",
+        ".*_one_joint",
+        ".*_two_joint",
+    ],
+    stiffness=0.0,
+    damping=5.0,
+)
 
 # ---------------------------------------------------------------------------
 # Scene configuration
 # ---------------------------------------------------------------------------
+_APARTMENT_USD = _os.path.join(
+    _os.path.dirname(__file__), "..", "..", "data", "scenes",
+    "replica_usd", "apartment_0", "mesh.usd"
+)
+
+_G1_12DOF_USD = _os.path.join(
+    _os.path.dirname(__file__), "..", "..", "data", "models",
+    "g1_12dof", "g1_12dof.usd"
+)
+
+# ---------------------------------------------------------------------------
+# 12-DOF G1 robot config (legs only — matches motion.pt training)
+# ---------------------------------------------------------------------------
+# Run scripts/convert_g1_12dof.py once to produce the USD.
+from isaaclab.assets import ArticulationCfg as _ArticulationCfg
+
+# 12-DOF model has no torso_joint — subset of _G1_STANDING_JOINTS
+_G1_12DOF_STANDING_JOINTS: dict[str, float] = {
+    ".*_hip_yaw_joint":     0.0,
+    ".*_hip_roll_joint":    0.0,
+    ".*_hip_pitch_joint":  -0.1,
+    ".*_knee_joint":        0.3,
+    ".*_ankle_pitch_joint": -0.2,
+    ".*_ankle_roll_joint":  0.0,
+}
+
+_G1_12DOF_CFG = _ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(usd_path=_G1_12DOF_USD),
+    init_state=_ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.80),
+        joint_pos=_G1_12DOF_STANDING_JOINTS,
+    ),
+    actuators={"legs": _TRAINING_LEGS_12DOF, "feet": _TRAINING_FEET},
+)
+_HOSPITAL_USD = _os.path.join(
+    _os.path.dirname(__file__), "..", "..", "data", "scenes",
+    "hospital", "hospital.usd"
+)
+# Office scene (alternative) — swap _HOSPITAL_USD for _OFFICE_USD below to use
+_OFFICE_USD = _os.path.join(
+    _os.path.dirname(__file__), "..", "..", "data", "scenes",
+    "office", "office.usd"
+)
+
+
 @configclass
 class HideAndSeekSceneCfg(InteractiveSceneCfg):
-    """Flat-ground arena with two G1 robots and an overview camera."""
+    """Flat-ground arena with two G1 robots inside a Replica apartment scene."""
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -73,25 +207,37 @@ class HideAndSeekSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
 
-    seeker: ArticulationCfg = _G1_BASE_CFG.replace(
+    # Replica apartment scene — static mesh with baked collision, shared across all envs.
+    # Robots walk inside the apartment; walls/furniture provide natural cover.
+    scene_mesh: AssetBaseCfg = AssetBaseCfg(
+        prim_path="/World/apartment",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=_APARTMENT_USD,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=True,
+            kinematic_enabled=True,  # immovable — cannot be dragged in viewport or pushed by physics
+        ),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+        ),
+    )
+
+    seeker: ArticulationCfg = _G1_12DOF_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Seeker",
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(-1.5, 0.0, 0.80),
-            # Use G1_CFG standing pose: hip_pitch=-0.20, knee=0.42, ankle=-0.23, etc.
+            joint_pos=_G1_12DOF_STANDING_JOINTS,
         ),
-        actuators={**_G1_BASE_CFG.actuators, "arms": _G1_BASE_CFG.actuators["arms"].replace(stiffness=0.0, damping=5.0)},
     )
 
-    hider: ArticulationCfg = _G1_BASE_CFG.replace(
+    hider: ArticulationCfg = _G1_12DOF_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Hider",
-        spawn=_G1_BASE_CFG.spawn.replace(
+        spawn=_G1_12DOF_CFG.spawn.replace(
             semantic_tags=[("class", "hider")],
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(1.5, 0.0, 0.80),
-            # Use G1_CFG standing pose: hip_pitch=-0.20, knee=0.42, ankle=-0.23, etc.
+            joint_pos=_G1_12DOF_STANDING_JOINTS,
         ),
-        actuators={**_G1_BASE_CFG.actuators, "arms": _G1_BASE_CFG.actuators["arms"].replace(stiffness=0.0, damping=5.0)},
     )
 
     # Cameras disabled — detection uses proximity (≤0.5 m) instead of vision.
@@ -174,7 +320,6 @@ class RewardsCfg:
 class TerminationsCfg:
     hider_found  = TerminationTermCfg(func=terminations.hider_detected,   time_out=False)
     phase_done   = TerminationTermCfg(func=terminations.game_phase_done,  time_out=True)
-    robot_fallen = TerminationTermCfg(func=terminations.robot_fallen,     time_out=False)
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +352,15 @@ class HideAndSeekEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg     = TerminationsCfg()
     events:       EventsCfg           = EventsCfg()
 
-    # Simulation timing
-    sim_dt:           float = 1.0 / 60.0  # 60 Hz physics
-    decimation:       int   = 2            # control at 30 Hz
-    episode_length_s: float = 45.0         # 15s hiding + 30s seeking
+    # Simulation timing — MUST match unitree_rl_gym training:
+    #   sim_dt=0.005 (200 Hz physics), decimation=4 → 50 Hz control
+    sim_dt:           float = 0.005       # 200 Hz physics (matches IsaacGym training)
+    decimation:       int   = 4            # control at 50 Hz (matches training)
+    episode_length_s: float = 90.0         # 30s hiding + 60s seeking
 
-    # Game parameters
-    hiding_phase_steps:           int   = 450    # 15s at 30 Hz
-    seeking_phase_steps:          int   = 900    # 30s at 30 Hz
+    # Game parameters (at 50 Hz control rate)
+    hiding_phase_steps:           int   = 1500   # 30s at 50 Hz (hider gets more time to hide)
+    seeking_phase_steps:          int   = 3000   # 60s at 50 Hz (seeker gets more time to find)
     min_spawn_distance:           float = 3.0    # meters
     detection_confirmation_steps: int   = 3      # consecutive frames
 
